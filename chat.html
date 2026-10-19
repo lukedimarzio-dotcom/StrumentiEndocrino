@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chatbot — Manuale</title>
+<style>
+body{font-family:-apple-system,"Segoe UI",Arial,sans-serif;margin:0;background:#f4f6f8;color:#222;line-height:1.5}
+header{background:#0b5394;color:#fff;padding:14px 18px}
+header h1{margin:0;font-size:1.1rem}
+header p{margin:2px 0 0;font-size:.78rem;opacity:.85}
+main{max-width:760px;margin:0 auto;padding:14px}
+.tool{background:#fff;border:1px solid #e2e6ea;border-radius:12px;padding:14px;margin-bottom:12px}
+label{display:block;font-size:.82rem;margin:8px 0 2px;color:#555}
+input{width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;font-size:1rem}
+button.act{margin-top:10px;width:100%;padding:11px;border:none;border-radius:8px;background:#0b5394;color:#fff;font-size:.95rem;cursor:pointer}
+#chatLog{display:flex;flex-direction:column;gap:10px;margin:14px 0}
+.msg{max-width:88%;padding:10px 13px;border-radius:12px;font-size:.92rem;white-space:pre-wrap}
+.msg.user{align-self:flex-end;background:#0b5394;color:#fff;border-bottom-right-radius:4px}
+.msg.bot{align-self:flex-start;background:#fff;border:1px solid #e2e6ea;border-bottom-left-radius:4px}
+.msg small{display:block;color:#888;font-size:.72rem;margin-top:6px}
+.status{font-size:.8rem;color:#666;text-align:center;padding:6px}
+footer{padding:14px;text-align:center;font-size:.72rem;color:#999}
+</style>
+</head>
+<body>
+<header>
+<h1>🤖 Chatbot del manuale</h1>
+<p>Risponde interroganndo il file <b>manuale.pdf</b> caricato in questa repo · le citazioni riportano le pagine</p>
+</header>
+<main>
+
+<div class="tool" id="setupKey">
+<h3 style="margin:0 0 6px;font-size:.95rem;color:#b45f06">🔑 Configurazione (una tantum)</h3>
+<p style="font-size:.82rem;color:#555;margin:0 0 4px">Incolla qui la tua chiave API Gemini (la trovi su aistudio.google.com → "Get API key"). Viene salvata <b>solo nella memoria di questo dispositivo</b>, non nel sito.</p>
+<label>Chiave Gemini API</label>
+<input id="apiKey" type="password" placeholder="AIza...">
+<button class="act" onclick="salvaChiave()">Salva chiave</button>
+</div>
+
+<div class="tool" id="setupPdf" style="display:none">
+<h3 style="margin:0 0 6px;font-size:.95rem;color:#b45f06">📄 Indicizzazione del manuale</h3>
+<div class="status" id="pdfStatus">Caricamento di manuale.pdf…</div>
+<div style="background:#eee;border-radius:6px;height:8px;overflow:hidden">
+<div id="pdfBar" style="height:100%;width:0;background:#0b5394;transition:width .2s"></div>
+</div>
+</div>
+
+<div id="chatUi" style="display:none">
+<div id="chatLog"></div>
+<div style="display:flex;gap:8px">
+<input id="domanda" type="text" placeholder="Fai una domanda sul manuale…" style="flex:1"
+ onkeydown="if(event.key==='Enter')invia()">
+<button class="act" style="width:auto;margin-top:0;padding:11px 18px" onclick="invia()">Invia</button>
+</div>
+<button class="act" style="background:#bbb;margin-top:8px" onclick="cambiaChiave()">Cambia chiave API</button>
+</div>
+
+</main>
+<footer>Il testo del manuale non lascia questo dispositivo: al servizio Gemini arrivano solo la domanda e i brani rilevanti.</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+let KEY = localStorage.getItem('gk') || '';
+let chunks = [];           // {t: testo, p: '12' o '12-14'}
+let pronto = false;
+
+const STOP = new Set(('il lo la i gli le un una uno di a da in con su per tra fra e o che non si al alla allo ai alle del della dei delle dell è sono come più ma anche questo questa queste cosa perché quando molto tutto tutti gia già nel nella nelle negli se suo sua suoi sue ha hanno essere fare fatto posso può dopo prima bene').split(' '));
+
+function salvaChiave(){
+  const k = document.getElementById('apiKey').value.trim();
+  if(!k){ alert('Inserisci la chiave'); return; }
+  KEY = k; localStorage.setItem('gk', k);
+  avvia();
+}
+function cambiaChiave(){
+  document.getElementById('apiKey').value = KEY;
+  document.getElementById('setupKey').style.display='block';
+  document.getElementById('chatUi').style.display='none';
+}
+function avvia(){
+  document.getElementById('setupKey').style.display='none';
+  if(pronto){ document.getElementById('chatUi').style.display='block'; return; }
+  document.getElementById('setupPdf').style.display='block';
+  indicizza();
+}
+
+/* ---------- estrazione testo dal PDF ---------- */
+async function indicizza(){
+  const st=document.getElementById('pdfStatus'), bar=document.getElementById('pdfBar');
+  try{
+    pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    const pdf=await pdfjsLib.getDocument('manuale.pdf').promise;
+    const pagine=[];
+    for(let p=1;p<=pdf.numPages;p++){
+      const pg=await pdf.getPage(p);
+      const tc=await pg.getTextContent();
+      pagine.push({n:p, t:tc.items.map(it=>it.str).join(' ')});
+      st.textContent='Lettura pagina '+p+' di '+pdf.numPages+'…';
+      bar.style.width=(p/pdf.numPages*100)+'%';
+    }
+    chunks=fraziona(pagine);
+    st.textContent='✅ Manuale indicizzato: '+chunks.length+' brani da '+pdf.numPages+' pagine. Puoi iniziare a chiedere.';
+    document.getElementById('chatUi').style.display='block';
+    pronto=true;
+  }catch(e){
+    st.textContent='⚠️ Errore: '+(e.message||e)+' — verifica che manuale.pdf sia caricato nella stessa cartella di questa pagina.';
+  }
+}
+function fraziona(pagine){
+  const out=[]; let buf='', da=null, prevN=null;
+  for(const pg of pagine){
+    const txt=pg.t.replace(/\s+/g,' ').trim();
+    if(!txt) continue;
+    if(da===null) da=pg.n;
+    else if(prevN!==null && pg.n>prevN+1){ push(buf,da,prevN); buf=''; da=pg.n; }
+    buf+=' '+txt;
+    if(buf.length>1100){ push(buf,da,pg.n); buf=''; da=null; }
+    prevN=pg.n;
+  }
+  if(buf.trim()) push(buf,da,prevN);
+  return out;
+  function push(t,a,b){ t=t.trim(); if(t) out.push({t:t.slice(0,1600), p:(a===b?String(a):a+'–'+b)}); }
+}
+
+/* ---------- ricerca TF-IDF ---------- */
+function tokens(s){ return s.toLowerCase().replace(/[^a-zàèéìòù0-9\s]/g,' ').split(/\s+/).filter(w=>w.length>2 && !STOP.has(w)); }
+let VOC={}, IDF={}, DIM=0;
+function costruisciIndice(){
+  VOC={}; IDF={};
+  chunks.forEach((c,i)=>{
+    const ts=tokens(c.t); const tf={};
+    ts.forEach(w=>tf[w]=(tf[w]||0)+1);
+    VOC[i]=tf;
+  });
+  const df={};
+  Object.values(VOC).forEach(tf=>Object.keys(tf).forEach(w=>df[w]=(df[w]||0)+1));
+  Object.keys(df).forEach(w=>IDF[w]=Math.log(1+chunks.length/df[w]));
+}
+function cerca(q,k){
+  const ts=tokens(q); if(!ts.length) return [];
+  const scores=chunks.map((c,i)=>{
+    let s=0; const tf=VOC[i]||{};
+    ts.forEach(w=>{ if(tf[w]) s+=(1+Math.log(tf[w]))*(IDF[w]||0); });
+    return {i,s};
+  }).filter(x=>x.s>0).sort((a,b)=>b.s-a.s).slice(0,k);
+  return scores.map(x=>({chunk:chunks[x.i], s:x.s}));
+}
+
+/* ---------- chiamata Gemini ---------- */
+const MODELLI=['gemini-2.5-flash','gemini-2.5-flash-lite','gemini-2.0-flash','gemini-flash-latest','gemini-2.0-flash-lite'];
+async function gemini(prompt){
+  for(const m of MODELLI){
+    try{
+      const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+m+':generateContent?key='+KEY,{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({contents:[{parts:[{text:prompt}]}]})
+      });
+      if(r.status===200){
+        const d=await r.json();
+        const c=(d.candidates||[])[0];
+        const t=c && c.content && c.content.parts ? c.content.parts.map(p=>p.text).join('') : '';
+        if(t) return t;
+      }
+    }catch(e){}
+  }
+  return null;
+}
+
+/* ---------- chat ---------- */
+function aggiungi(testo, chi, extra){
+  const d=document.createElement('div');
+  d.className='msg '+chi;
+  d.textContent=testo;
+  if(extra){ const s=document.createElement('small'); s.textContent=extra; d.appendChild(s); }
+  document.getElementById('chatLog').appendChild(d);
+  d.scrollIntoView({behavior:'smooth',block:'end'});
+}
+async function invia(){
+  const inp=document.getElementById('domanda');
+  const q=inp.value.trim(); if(!q||!pronto) return;
+  inp.value=''; aggiungi(q,'user');
+  const st=document.createElement('div'); st.className='status'; st.textContent='🔍 Cerco nel manuale…';
+  document.getElementById('chatLog').appendChild(st);
+  const trovati=cerca(q,6);
+  st.remove();
+  if(!trovati.length){ aggiungi('Non ho trovato brani pertinenti nel manuale per questa domanda.','bot'); return; }
+  const ctx=trovati.map(x=>'[Pag. '+x.chunk.p+']\n'+x.chunk.t).join('\n---\n');
+  const prompt="Sei un assistente che risponde SOLO in base al contesto estratto da un manuale medico dell'utente. Rispondi in italiano, in modo sintetico e operativo. Se la risposta non è nel contesto, dillo chiaramente invece di inventare. Cita le pagine del manuale tra parentesi quadde dopo le affermazioni ([Pag. N]).\n\nCONTESTO:\n"+ctx+"\n\nDOMANDA: "+q;
+  aggiungi('✍️ Genero la risposta…','bot');
+  const pendente=document.getElementById('chatLog').lastChild;
+  const risp=await gemini(prompt);
+  pendente.remove();
+  if(!risp){ aggiungi('Errore: Gemini non ha risposto. Controlla la chiave API, la connessione o i limiti di quota.','bot'); return; }
+  const pagine=[...new Set(trovati.map(x=>x.chunk.p))].slice(0,6).join(', ');
+  aggiungi(risp,'bot','Fonti: pagine '+pagine);
+}
+
+/* ---------- avvio ---------- */
+if(KEY){ avvia(); }
+</script>
+</body>
+</html>
